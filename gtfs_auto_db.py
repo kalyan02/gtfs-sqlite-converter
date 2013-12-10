@@ -1,7 +1,13 @@
 import os, csv, re, difflib, math, sys, time, json, sqlite3
+from optparse import OptionParser
 
-db_name = 'gvb.db'
-input_directory = './gtfs_amsterdam/'
+parser = OptionParser()
+parser.add_option("-d", "--db",dest="db")
+parser.add_option("-s", "--src", dest="src")
+kwargs, inputs = parser.parse_args()
+
+db_name = kwargs.db #'gvb.db'
+input_directory = kwargs.src #'./gtfs_amsterdam/'
 
 fields_type_map = {
  'agency_id': 'TEXT',
