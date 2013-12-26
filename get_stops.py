@@ -4,18 +4,64 @@ from pprint import pprint
 reload(sys)
 sys.setdefaultencoding('utf-8')
 
-
 def dict_factory(cursor, row):
 	d = {}
 	for idx, col in enumerate(cursor.description):
 		d[col[0]] = row[idx]
 	return d
 
-db_name = 'gvb.db'
+
+# parse options from command line
+from optparse import OptionParser
+parser = OptionParser()
+parser.add_option("-d", "--db",dest="db",help="Source database")
+parser.add_option("-o", "--output-prefix", dest="output_prefix")
+kwargs, inputs = parser.parse_args()
+
+if not kwargs.db:
+	parser.error("-d <dbname> - Source db is required")
+
+if not kwargs.output_prefix:
+	output_prefix = kwargs.db.replace(".db","")
+else:
+	output_prefix = kwargs.output_prefix
+
+# setup the database
+db_name = kwargs.db #'cxx.db'
 dbconn = sqlite3.connect(db_name)
 dbconn.text_factory = str
 dbconn.row_factory = dict_factory
 dbcursor = dbconn.cursor()
+
+
+# math utils
+from math import radians, cos, sin, asin, sqrt
+def haversine(lon1, lat1, lon2, lat2):
+	"""
+	Calculate the great circle distance between two points 
+	on the earth (specified in decimal degrees)
+	"""
+	# convert decimal degrees to radians 
+	lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+	# haversine formula 
+	dlon = lon2 - lon1 
+	dlat = lat2 - lat1 
+	a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+	c = 2 * asin(sqrt(a)) 
+	km = 6367 * c
+	return km
+
+def ll_dist( pt1, pt2 ):
+	lat1, lon1 = pt1
+	lat2, lon2 = pt2
+	return haversine( lon1, lat1, lon2, lat2 )
+
+def point_in_amsterdam( pt ):
+	city_center = (52.37022,4.89517)
+	return ll_dist( city_center, pt) <= 5 #8km
+
+
+# stop utils
 
 
 def _get_all_top_trips():
@@ -144,12 +190,13 @@ def _get_routes():
 	SELECT 
 		route_id,
 		route_short_name AS short_name,
-		route_long_name AS long_name 
+		route_long_name AS long_name,
+		route_type AS route_type 
 	FROM routes
 	"""
 	lst = dbcursor.execute(sql)
 	routes = lst.fetchall()
-	routes.sort( key=lambda x: int(x['short_name']) )
+	routes.sort( key=lambda x: int( re.findall('(\d+)', x['route_id'])[0] ) )
 	return routes
 
 def _write_to_file(fname,content):
@@ -165,17 +212,24 @@ def _write_json(fname,obj):
 def _write_plist(fname,obj):
 	plistlib.writePlist(obj,fname)
 
-# print _get_all_top_trips()
+# print point_in_amsterdam( (52.37022,4.89517) )
 # sys.exit(-1)
 
 if __name__ == '__main__':
 	allroutes  = _get_routes()
+	# pprint( [ (e['route_id'], e['short_name']) for e in allroutes ])
+	# sys.exit(-1)
+
+	# pprint(allroutes)
+	# sys.exit(-1)
+
 	allstops = _get_all_stops()
 	stop_to_parent_map = { e['stop_id'] : e['parent_station'] for e in allstops.values() if len(e['parent_station']) > 0 }
 
-	_write_json( 'json/routes.json', allroutes )
+	# _write_json( 'json/%s_routes.json' % output_prefix, allroutes )
 
 	stop_routes_map = {}
+	valid_routes = []
 
 	# for each route
 	for i, route in enumerate(allroutes):
@@ -184,7 +238,26 @@ if __name__ == '__main__':
 
 		# get route_id -> trip_id -> all stops
 		trip = _get_top_trip(route_id)
-		trip_id = trip['trip_id']
+		if trip is not None:
+			trip_id = trip['trip_id']
+		else:
+			print 'skipping route(%s) trip(%s)' %( route_id, trip )
+			continue
+
+		"""First calculate shape information"""
+
+		shape_id = trip['shape_id']
+		trip_shape = _get_shape(shape_id)
+		trip_shape_min = [ (e['lat'],e['lon']) for e in trip_shape ]
+
+		shape_points_in_ams = map( point_in_amsterdam, trip_shape_min )
+		if sum(shape_points_in_ams) == 0:
+			print 'skipping route(%s) - outside amsterdam' %( route_id )
+			continue
+
+
+		"""Calculate trip stops information"""
+
 		trip_stops = _get_trip_stops_real(trip_id)
 
 		for each_trip_stop in trip_stops:
@@ -198,14 +271,13 @@ if __name__ == '__main__':
 		# pprint(stop_routes_map)
 		# sys.exit(-1)
 
-		shape_id = trip['shape_id']
-		trip_shape = _get_shape(shape_id)
-
-		trip_shape_min = [ [e['lat'],e['lon']] for e in trip_shape ]
+		valid_routes.append( route )
 
 		route_fname = route_id.replace('|','_')
 		_write_json( 'json/stops/%s.json' % route_fname, trip_stops )
 		_write_json( 'json/shapes/%s.json' % route_fname, trip_shape_min )
 
-	_write_json('json/stop_routes_map.json', stop_routes_map )
-	_write_plist('json/stop_routes_map.plist', stop_routes_map )
+	_write_json( 'json/%s_routes.json' % output_prefix, valid_routes )
+
+	_write_json('json/%s_stop_routes_map.json' % output_prefix, stop_routes_map )
+	_write_plist('json/%s_stop_routes_map.plist' % output_prefix, stop_routes_map )
